@@ -14,8 +14,9 @@ public final class ThermalEdgeView extends View {
 
     private Bitmap edgeBitmap;
     private int[] pixels;
-    private int threshold = 70;
-    private float opacity = 0.9f;
+    private int[] blurred;
+    private int threshold = 55;
+    private float opacity = 0.8f;
     private float scale = 1.0f;
     private float rotation = 0f;
     private float offsetX = 0f;
@@ -31,38 +32,62 @@ public final class ThermalEdgeView extends View {
         hudPaint.setColor(0x9965FF8A);
     }
 
-    public void setThreshold(int value) { threshold = Math.max(5, Math.min(255, value)); }
+    public void setThreshold(int value) { threshold = Math.max(10, Math.min(255, value)); }
     public void setOpacity(float value) { opacity = Math.max(0f, Math.min(1f, value)); invalidate(); }
     public void setScaleFactor(float value) { scale = Math.max(0.15f, Math.min(3f, value)); invalidate(); }
     public void setRotationDegrees(float value) { rotation = value; invalidate(); }
     public void setOffset(float xNormalized, float yNormalized) { offsetX = xNormalized; offsetY = yNormalized; invalidate(); }
 
     public void submitLuma(byte[] luma, int width, int height) {
-        if (luma == null || width < 3 || height < 3 || luma.length < width * height) return;
+        if (luma == null || width < 5 || height < 5 || luma.length < width * height) return;
         synchronized (frameLock) {
+            int size = width * height;
             if (edgeBitmap == null || edgeBitmap.getWidth() != width || edgeBitmap.getHeight() != height) {
                 edgeBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-                pixels = new int[width * height];
+                pixels = new int[size];
+                blurred = new int[size];
             }
+
             java.util.Arrays.fill(pixels, 0);
-            int t = threshold;
+            java.util.Arrays.fill(blurred, 0);
+
+            // Small Gaussian-like blur first. Raw thermal sensors contain fixed-pattern and temporal
+            // noise; running Sobel directly on that noise turns the entire frame into a green block.
             for (int y = 1; y < height - 1; y++) {
                 int row = y * width;
                 for (int x = 1; x < width - 1; x++) {
                     int i = row + x;
-                    int tl = luma[i - width - 1] & 0xff;
-                    int tc = luma[i - width] & 0xff;
-                    int tr = luma[i - width + 1] & 0xff;
-                    int ml = luma[i - 1] & 0xff;
-                    int mr = luma[i + 1] & 0xff;
-                    int bl = luma[i + width - 1] & 0xff;
-                    int bc = luma[i + width] & 0xff;
-                    int br = luma[i + width + 1] & 0xff;
+                    int c = luma[i] & 0xff;
+                    int n = luma[i - width] & 0xff;
+                    int s = luma[i + width] & 0xff;
+                    int w = luma[i - 1] & 0xff;
+                    int e = luma[i + 1] & 0xff;
+                    int nw = luma[i - width - 1] & 0xff;
+                    int ne = luma[i - width + 1] & 0xff;
+                    int sw = luma[i + width - 1] & 0xff;
+                    int se = luma[i + width + 1] & 0xff;
+                    blurred[i] = (c * 4 + (n + s + w + e) * 2 + nw + ne + sw + se) >> 4;
+                }
+            }
+
+            int t = threshold;
+            for (int y = 2; y < height - 2; y++) {
+                int row = y * width;
+                for (int x = 2; x < width - 2; x++) {
+                    int i = row + x;
+                    int tl = blurred[i - width - 1];
+                    int tc = blurred[i - width];
+                    int tr = blurred[i - width + 1];
+                    int ml = blurred[i - 1];
+                    int mr = blurred[i + 1];
+                    int bl = blurred[i + width - 1];
+                    int bc = blurred[i + width];
+                    int br = blurred[i + width + 1];
                     int gx = -tl - (ml << 1) - bl + tr + (mr << 1) + br;
                     int gy = -tl - (tc << 1) - tr + bl + (bc << 1) + br;
                     int mag = (Math.abs(gx) + Math.abs(gy)) >> 2;
                     if (mag >= t) {
-                        int a = Math.min(255, 100 + mag);
+                        int a = Math.min(220, 42 + (mag - t) * 4);
                         pixels[i] = (a << 24) | 0x0065FF8A;
                     }
                 }
