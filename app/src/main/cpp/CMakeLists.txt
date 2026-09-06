@@ -37,7 +37,7 @@ target_link_libraries(usb PRIVATE log)
 FetchContent_Declare(
     libuvc_src
     GIT_REPOSITORY https://github.com/libuvc/libuvc.git
-    GIT_TAG 047920bcdfb1dac42424c90de5cc77dfc9fba04d
+    GIT_TAG 428b7fc495ba0637e31f6ad5c6af479aecb21163
 )
 FetchContent_GetProperties(libuvc_src)
 if(NOT libuvc_src_POPULATED)
