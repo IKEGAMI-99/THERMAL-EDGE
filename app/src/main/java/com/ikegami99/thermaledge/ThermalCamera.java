@@ -23,9 +23,14 @@ final class ThermalCamera {
         close();
         this.connection = connection;
         int fd = connection.getFileDescriptor();
-        Log.i(TAG, "Opening UVC thermal camera VID=" + Integer.toHexString(device.getVendorId())
-                + " PID=" + Integer.toHexString(device.getProductId()) + " fd=" + fd);
+        String opening = "Opening UVC VID=" + String.format("%04X", device.getVendorId())
+                + " PID=" + String.format("%04X", device.getProductId())
+                + " product=" + device.getProductName() + " fd=" + fd;
+        Log.i(TAG, opening);
+        AppLog.i("USB", opening);
+
         open = nativeOpen(fd, device.getVendorId(), device.getProductId());
+        AppLog.i("NATIVE", "open=" + open + " | " + diagnostics());
         if (!open) {
             connection.close();
             this.connection = null;
@@ -36,11 +41,22 @@ final class ThermalCamera {
     boolean start(FrameCallback callback) {
         if (!open) return false;
         this.callback = callback;
-        return nativeStartStream(new NativeCallback());
+        boolean started = nativeStartStream(new NativeCallback());
+        AppLog.i("NATIVE", "stream start=" + started + " | " + diagnostics());
+        return started;
     }
 
     boolean isStreaming() {
         return nativeIsStreaming();
+    }
+
+    String diagnostics() {
+        try {
+            String value = nativeGetDiagnostics();
+            return value == null ? "native diagnostics unavailable" : value;
+        } catch (Throwable t) {
+            return "native diagnostics error=" + t.getClass().getSimpleName() + ":" + t.getMessage();
+        }
     }
 
     void close() {
@@ -67,4 +83,5 @@ final class ThermalCamera {
     private native void nativeStopStream();
     private native void nativeClose();
     private native boolean nativeIsStreaming();
+    private native String nativeGetDiagnostics();
 }
