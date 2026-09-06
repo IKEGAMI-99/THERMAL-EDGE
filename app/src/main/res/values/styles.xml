@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.ThermalEdge" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:windowBackground">#050806</item>
+        <item name="android:colorAccent">#65FF8A</item>
+        <item name="android:navigationBarColor">#050806</item>
+        <item name="android:statusBarColor">#050806</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
