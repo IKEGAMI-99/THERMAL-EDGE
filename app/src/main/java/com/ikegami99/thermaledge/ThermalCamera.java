@@ -25,7 +25,7 @@ final class ThermalCamera {
         int fd = connection.getFileDescriptor();
         Log.i(TAG, "Opening UVC thermal camera VID=" + Integer.toHexString(device.getVendorId())
                 + " PID=" + Integer.toHexString(device.getProductId()) + " fd=" + fd);
-        open = nativeOpen(fd);
+        open = nativeOpen(fd, device.getVendorId(), device.getProductId());
         if (!open) {
             connection.close();
             this.connection = null;
@@ -62,7 +62,7 @@ final class ThermalCamera {
         }
     }
 
-    private native boolean nativeOpen(int fd);
+    private native boolean nativeOpen(int fd, int vendorId, int productId);
     private native boolean nativeStartStream(Object callback);
     private native void nativeStopStream();
     private native void nativeClose();
