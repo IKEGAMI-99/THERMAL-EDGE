@@ -15,12 +15,12 @@ import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
 import android.os.Bundle;
 import android.view.Gravity;
-import android.view.View;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
@@ -32,17 +32,26 @@ import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import com.google.common.util.concurrent.ListenableFuture;
 
 import java.util.Locale;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 public final class MainActivity extends AppCompatActivity {
     private static final String ACTION_USB_PERMISSION = "com.ikegami99.thermaledge.USB_PERMISSION";
     private static final int GREEN = Color.rgb(101, 255, 138);
     private static final int DIM_GREEN = Color.rgb(93, 155, 108);
+
+    private static final int DEFAULT_THRESHOLD = 55;
+    private static final int DEFAULT_OPACITY = 80;
+    private static final int DEFAULT_SCALE = 100;
+    private static final int DEFAULT_OFFSET_X = 0;
+    private static final int DEFAULT_OFFSET_Y = 0;
+    private static final int DEFAULT_ROTATION = 0;
+    private static final int DEFAULT_RGB_ZOOM = 55;
 
     private PreviewView previewView;
     private ThermalEdgeView edgeView;
@@ -50,11 +59,20 @@ public final class MainActivity extends AppCompatActivity {
     private TextView fpsStatus;
     private TextView alignStatus;
     private Button connectButton;
+    private Button updateButton;
+
+    private SeekBar thresholdBar;
+    private SeekBar opacityBar;
+    private SeekBar scaleBar;
+    private SeekBar offsetXBar;
+    private SeekBar offsetYBar;
+    private SeekBar rotationBar;
+    private SeekBar zoomBar;
 
     private UsbManager usbManager;
     private final ThermalCamera thermalCamera = new ThermalCamera();
-    private final ExecutorService cameraExecutor = Executors.newSingleThreadExecutor();
     private Camera rgbCamera;
+    private UpdateManager updateManager;
 
     private long fpsEpoch;
     private int fpsFrames;
@@ -81,6 +99,7 @@ public final class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
         buildUi();
+        updateManager = new UpdateManager(this, this::onUpdateStatus);
         ContextCompat.registerReceiver(this, usbReceiver, new IntentFilter(ACTION_USB_PERMISSION), ContextCompat.RECEIVER_NOT_EXPORTED);
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             startRgbCamera();
@@ -102,7 +121,7 @@ public final class MainActivity extends AppCompatActivity {
 
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.VERTICAL);
-        top.setPadding(dp(16), dp(12), dp(16), dp(10));
+        top.setPadding(dp(16), dp(10), dp(16), dp(10));
         top.setBackgroundColor(0xC90A100C);
         TextView title = text("THERMAL EDGE", 22, GREEN);
         title.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD);
@@ -128,32 +147,74 @@ public final class MainActivity extends AppCompatActivity {
         connectButton.setOnClickListener(v -> findThermalCamera());
         panel.addView(connectButton, new LinearLayout.LayoutParams(-1, dp(44)));
 
-        addSlider(panel, "EDGE THRESHOLD", 5, 180, 70, value -> edgeView.setThreshold(value));
-        addSlider(panel, "EDGE OPACITY", 0, 100, 90, value -> edgeView.setOpacity(value / 100f));
-        addSlider(panel, "THERMAL SCALE", 20, 240, 100, value -> {
-            edgeView.setScaleFactor(value / 100f); updateAlign(value / 100f);
+        LinearLayout actionRow = new LinearLayout(this);
+        actionRow.setOrientation(LinearLayout.HORIZONTAL);
+        actionRow.setPadding(0, dp(6), 0, 0);
+
+        Button resetButton = new Button(this);
+        resetButton.setText("RESET VALUES");
+        resetButton.setTextColor(Color.BLACK);
+        resetButton.setBackgroundColor(DIM_GREEN);
+        resetButton.setOnClickListener(v -> resetControls());
+        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        actionParams.setMarginEnd(dp(4));
+        actionRow.addView(resetButton, actionParams);
+
+        updateButton = new Button(this);
+        updateButton.setText("CHECK UPDATE");
+        updateButton.setTextColor(Color.BLACK);
+        updateButton.setBackgroundColor(GREEN);
+        updateButton.setOnClickListener(v -> updateManager.checkForUpdate());
+        LinearLayout.LayoutParams updateParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        updateParams.setMarginStart(dp(4));
+        actionRow.addView(updateButton, updateParams);
+        panel.addView(actionRow);
+
+        thresholdBar = addSlider(panel, "EDGE THRESHOLD", 10, 180, DEFAULT_THRESHOLD,
+                value -> edgeView.setThreshold(value));
+        opacityBar = addSlider(panel, "EDGE OPACITY", 0, 100, DEFAULT_OPACITY,
+                value -> edgeView.setOpacity(value / 100f));
+        scaleBar = addSlider(panel, "THERMAL SCALE", 20, 240, DEFAULT_SCALE, value -> {
+            edgeView.setScaleFactor(value / 100f);
+            updateAlign(value / 100f);
         });
-        addSlider(panel, "OFFSET X", -100, 100, 0, value -> {
-            offsetX = value / 200f; edgeView.setOffset(offsetX, offsetY); updateAlign(null);
+        offsetXBar = addSlider(panel, "OFFSET X", -100, 100, DEFAULT_OFFSET_X, value -> {
+            offsetX = value / 200f;
+            edgeView.setOffset(offsetX, offsetY);
+            updateAlign(null);
         });
-        addSlider(panel, "OFFSET Y", -100, 100, 0, value -> {
-            offsetY = value / 200f; edgeView.setOffset(offsetX, offsetY); updateAlign(null);
+        offsetYBar = addSlider(panel, "OFFSET Y", -100, 100, DEFAULT_OFFSET_Y, value -> {
+            offsetY = value / 200f;
+            edgeView.setOffset(offsetX, offsetY);
+            updateAlign(null);
         });
-        addSlider(panel, "ROTATION", -30, 30, 0, value -> edgeView.setRotationDegrees(value));
-        addSlider(panel, "RGB ZOOM", 0, 100, 55, value -> {
+        rotationBar = addSlider(panel, "ROTATION", -30, 30, DEFAULT_ROTATION,
+                value -> edgeView.setRotationDegrees(value));
+        zoomBar = addSlider(panel, "RGB ZOOM", 0, 100, DEFAULT_RGB_ZOOM, value -> {
             if (rgbCamera != null) rgbCamera.getCameraControl().setLinearZoom(value / 100f);
         });
 
         FrameLayout.LayoutParams panelParams = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
         root.addView(panel, panelParams);
+
+        ViewCompat.setOnApplyWindowInsetsListener(root, (view, insets) -> {
+            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            topParams.topMargin = bars.top;
+            panelParams.bottomMargin = bars.bottom;
+            top.setLayoutParams(topParams);
+            panel.setLayoutParams(panelParams);
+            return insets;
+        });
+
         setContentView(root);
+        ViewCompat.requestApplyInsets(root);
     }
 
     private interface ValueListener { void onValue(int value); }
 
-    private void addSlider(LinearLayout parent, String name, int min, int max, int initial, ValueListener listener) {
+    private SeekBar addSlider(LinearLayout parent, String name, int min, int max, int initial, ValueListener listener) {
         TextView label = text(name + "  " + initial, 11, GREEN);
-        label.setPadding(0, dp(6), 0, 0);
+        label.setPadding(0, dp(5), 0, 0);
         parent.addView(label);
         SeekBar bar = new SeekBar(this);
         bar.setMax(max - min);
@@ -167,7 +228,33 @@ public final class MainActivity extends AppCompatActivity {
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
-        parent.addView(bar, new LinearLayout.LayoutParams(-1, dp(30)));
+        parent.addView(bar, new LinearLayout.LayoutParams(-1, dp(28)));
+        return bar;
+    }
+
+    private void resetControls() {
+        setSliderValue(thresholdBar, 10, DEFAULT_THRESHOLD);
+        setSliderValue(opacityBar, 0, DEFAULT_OPACITY);
+        setSliderValue(scaleBar, 20, DEFAULT_SCALE);
+        setSliderValue(offsetXBar, -100, DEFAULT_OFFSET_X);
+        setSliderValue(offsetYBar, -100, DEFAULT_OFFSET_Y);
+        setSliderValue(rotationBar, -30, DEFAULT_ROTATION);
+        setSliderValue(zoomBar, 0, DEFAULT_RGB_ZOOM);
+        Toast.makeText(this, "表示パラメータを初期値に戻しました", Toast.LENGTH_SHORT).show();
+    }
+
+    private void setSliderValue(SeekBar bar, int min, int value) {
+        if (bar != null) bar.setProgress(value - min);
+    }
+
+    private void onUpdateStatus(String status) {
+        runOnUiThread(() -> {
+            if (updateButton != null) updateButton.setText(status);
+            if (status.startsWith("UP TO DATE") || status.startsWith("UPDATE ERROR")) {
+                Toast.makeText(this, status, Toast.LENGTH_LONG).show();
+                updateButton.postDelayed(() -> updateButton.setText("CHECK UPDATE"), 2500);
+            }
+        });
     }
 
     private TextView text(String value, int sp, int color) {
@@ -190,7 +277,7 @@ public final class MainActivity extends AppCompatActivity {
                 preview.setSurfaceProvider(previewView.getSurfaceProvider());
                 provider.unbindAll();
                 rgbCamera = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview);
-                rgbCamera.getCameraControl().setLinearZoom(0.55f);
+                rgbCamera.getCameraControl().setLinearZoom(DEFAULT_RGB_ZOOM / 100f);
             } catch (Exception e) {
                 usbStatus.setText("RGB CAMERA : ERROR " + e.getClass().getSimpleName());
             }
@@ -247,7 +334,7 @@ public final class MainActivity extends AppCompatActivity {
                 final int fps = fpsFrames;
                 fpsFrames = 0;
                 fpsEpoch = now;
-                runOnUiThread(() -> fpsStatus.setText("IR FPS  : " + fps + "   " + width + "x" + height));
+                runOnUiThread(() -> fpsStatus.setText("IR FPS  : " + fps + "   " + width + "x" + height + "  RAW16"));
             }
         });
         if (started) setUsbState("THERMAL : CONNECTED  " + safeName(device), true);
@@ -273,9 +360,14 @@ public final class MainActivity extends AppCompatActivity {
         alignStatus.setText(String.format(Locale.US, "ALIGN   : X %+1.2f  Y %+1.2f  S %.2f", offsetX, offsetY, lastScale));
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        if (updateManager != null) updateManager.resumePendingInstall();
+    }
+
     @Override protected void onDestroy() {
         thermalCamera.close();
-        cameraExecutor.shutdownNow();
+        if (updateManager != null) updateManager.close();
         unregisterReceiver(usbReceiver);
         super.onDestroy();
     }
