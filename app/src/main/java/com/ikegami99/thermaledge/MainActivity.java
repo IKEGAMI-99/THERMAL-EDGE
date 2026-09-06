@@ -13,6 +13,7 @@ import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.widget.Button;
@@ -38,6 +39,10 @@ import androidx.core.view.WindowInsetsCompat;
 
 import com.google.common.util.concurrent.ListenableFuture;
 
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.Locale;
 
 public final class MainActivity extends AppCompatActivity {
@@ -78,11 +83,31 @@ public final class MainActivity extends AppCompatActivity {
     private int fpsFrames;
     private float offsetX;
     private float offsetY;
+    private byte[] previousLoggedFrame;
 
     private final ActivityResultLauncher<String> cameraPermission = registerForActivityResult(
             new ActivityResultContracts.RequestPermission(), granted -> {
+                AppLog.i("PERMISSION", "camera granted=" + granted);
                 if (granted) startRgbCamera();
                 else usbStatus.setText("RGB CAMERA : PERMISSION DENIED");
+            });
+
+    private final ActivityResultLauncher<String> logExport = registerForActivityResult(
+            new ActivityResultContracts.CreateDocument("text/plain"), uri -> {
+                if (uri == null) {
+                    AppLog.w("LOG", "export cancelled");
+                    return;
+                }
+                try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    if (out == null) throw new IllegalStateException("openOutputStream returned null");
+                    String tail = "\n--- FINAL NATIVE DIAGNOSTICS ---\n" + thermalCamera.diagnostics() + "\n";
+                    out.write((AppLog.snapshot() + tail).getBytes(StandardCharsets.UTF_8));
+                    out.flush();
+                    Toast.makeText(this, "ログを書き出しました", Toast.LENGTH_SHORT).show();
+                } catch (Exception e) {
+                    AppLog.e("LOG", "export failed: " + e);
+                    Toast.makeText(this, "ログ書き出し失敗: " + e.getClass().getSimpleName(), Toast.LENGTH_LONG).show();
+                }
             });
 
     private final BroadcastReceiver usbReceiver = new BroadcastReceiver() {
@@ -90,6 +115,7 @@ public final class MainActivity extends AppCompatActivity {
             if (!ACTION_USB_PERMISSION.equals(intent.getAction())) return;
             UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
             boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
+            AppLog.i("USB", "permission result granted=" + granted + " device=" + (device == null ? "null" : safeName(device)));
             if (granted && device != null) openThermal(device);
             else setUsbState("THERMAL : USB PERMISSION DENIED", false);
         }
@@ -97,6 +123,12 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        AppLog.clear();
+        AppLog.i("APP", "THERMAL EDGE " + BuildConfig.VERSION_NAME
+                + " start manufacturer=" + Build.MANUFACTURER
+                + " model=" + Build.MODEL
+                + " sdk=" + Build.VERSION.SDK_INT);
+
         usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
         buildUi();
         updateManager = new UpdateManager(this, this::onUpdateStatus);
@@ -164,11 +196,23 @@ public final class MainActivity extends AppCompatActivity {
         updateButton.setText("CHECK UPDATE");
         updateButton.setTextColor(Color.BLACK);
         updateButton.setBackgroundColor(GREEN);
-        updateButton.setOnClickListener(v -> updateManager.checkForUpdate());
+        updateButton.setOnClickListener(v -> {
+            AppLog.i("UPDATE", "manual update check");
+            updateManager.checkForUpdate();
+        });
         LinearLayout.LayoutParams updateParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
         updateParams.setMarginStart(dp(4));
         actionRow.addView(updateButton, updateParams);
         panel.addView(actionRow);
+
+        Button exportLogButton = new Button(this);
+        exportLogButton.setText("EXPORT DIAGNOSTIC LOG");
+        exportLogButton.setTextColor(Color.BLACK);
+        exportLogButton.setBackgroundColor(DIM_GREEN);
+        exportLogButton.setOnClickListener(v -> exportLog());
+        LinearLayout.LayoutParams logParams = new LinearLayout.LayoutParams(-1, dp(40));
+        logParams.topMargin = dp(5);
+        panel.addView(exportLogButton, logParams);
 
         thresholdBar = addSlider(panel, "EDGE THRESHOLD", 10, 180, DEFAULT_THRESHOLD,
                 value -> edgeView.setThreshold(value));
@@ -240,7 +284,14 @@ public final class MainActivity extends AppCompatActivity {
         setSliderValue(offsetYBar, -100, DEFAULT_OFFSET_Y);
         setSliderValue(rotationBar, -30, DEFAULT_ROTATION);
         setSliderValue(zoomBar, 0, DEFAULT_RGB_ZOOM);
+        AppLog.i("UI", "display values reset to defaults");
         Toast.makeText(this, "表示パラメータを初期値に戻しました", Toast.LENGTH_SHORT).show();
+    }
+
+    private void exportLog() {
+        AppLog.i("LOG", "export requested; " + thermalCamera.diagnostics());
+        String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+        logExport.launch("thermal-edge-" + BuildConfig.VERSION_NAME + "-" + stamp + ".txt");
     }
 
     private void setSliderValue(SeekBar bar, int min, int value) {
@@ -248,6 +299,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void onUpdateStatus(String status) {
+        AppLog.i("UPDATE", status);
         runOnUiThread(() -> {
             if (updateButton != null) updateButton.setText(status);
             if (status.startsWith("UP TO DATE") || status.startsWith("UPDATE ERROR")) {
@@ -278,7 +330,9 @@ public final class MainActivity extends AppCompatActivity {
                 provider.unbindAll();
                 rgbCamera = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview);
                 rgbCamera.getCameraControl().setLinearZoom(DEFAULT_RGB_ZOOM / 100f);
+                AppLog.i("RGB", "rear camera started defaultZoom=" + DEFAULT_RGB_ZOOM);
             } catch (Exception e) {
+                AppLog.e("RGB", "camera error=" + e);
                 usbStatus.setText("RGB CAMERA : ERROR " + e.getClass().getSimpleName());
             }
         }, ContextCompat.getMainExecutor(this));
@@ -286,8 +340,12 @@ public final class MainActivity extends AppCompatActivity {
 
     private void findThermalCamera() {
         setUsbState("THERMAL : SCANNING USB", false);
+        AppLog.i("USB", "scan start deviceCount=" + usbManager.getDeviceList().size());
         UsbDevice chosen = null;
         for (UsbDevice device : usbManager.getDeviceList().values()) {
+            AppLog.i("USB", String.format(Locale.US,
+                    "device VID=%04X PID=%04X product=%s interfaces=%d",
+                    device.getVendorId(), device.getProductId(), safeName(device), device.getInterfaceCount()));
             if (isUvc(device)) { chosen = device; break; }
         }
         if (chosen == null) {
@@ -319,13 +377,17 @@ public final class MainActivity extends AppCompatActivity {
 
     private void openThermal(@NonNull UsbDevice device) {
         setUsbState("THERMAL : OPENING " + safeName(device), false);
+        AppLog.i("USB", String.format(Locale.US, "open request VID=%04X PID=%04X name=%s",
+                device.getVendorId(), device.getProductId(), safeName(device)));
         UsbDeviceConnection connection = usbManager.openDevice(device);
         if (connection == null || !thermalCamera.open(device, connection)) {
+            AppLog.e("USB", "thermal open failed connection=" + (connection != null));
             setUsbState("THERMAL : OPEN FAILED", false);
             return;
         }
         fpsEpoch = System.nanoTime();
         fpsFrames = 0;
+        previousLoggedFrame = null;
         boolean started = thermalCamera.start((luma, width, height) -> {
             edgeView.submitLuma(luma, width, height);
             fpsFrames++;
@@ -334,11 +396,43 @@ public final class MainActivity extends AppCompatActivity {
                 final int fps = fpsFrames;
                 fpsFrames = 0;
                 fpsEpoch = now;
-                runOnUiThread(() -> fpsStatus.setText("IR FPS  : " + fps + "   " + width + "x" + height + "  RAW16"));
+                String frameStats = frameStats(luma, previousLoggedFrame);
+                previousLoggedFrame = luma.clone();
+                String nativeStats = thermalCamera.diagnostics();
+                AppLog.i("FRAME", "fps=" + fps + " output=" + width + "x" + height
+                        + " " + frameStats + " | " + nativeStats);
+                runOnUiThread(() -> fpsStatus.setText("IR FPS  : " + fps + "   " + width + "x" + height + "  RAW16+NUC"));
             }
         });
-        if (started) setUsbState("THERMAL : CONNECTED  " + safeName(device), true);
-        else setUsbState("THERMAL : STREAM FAILED", false);
+        if (started) {
+            AppLog.i("USB", "thermal stream connected | " + thermalCamera.diagnostics());
+            setUsbState("THERMAL : CONNECTED  " + safeName(device), true);
+        } else {
+            AppLog.e("USB", "stream failed | " + thermalCamera.diagnostics());
+            setUsbState("THERMAL : STREAM FAILED", false);
+        }
+    }
+
+    private String frameStats(byte[] frame, byte[] previous) {
+        if (frame == null || frame.length == 0) return "luma=empty";
+        int min = 255;
+        int max = 0;
+        long sum = 0;
+        long delta = 0;
+        int count = 0;
+        int step = Math.max(1, frame.length / 8192);
+        boolean compare = previous != null && previous.length == frame.length;
+        for (int i = 0; i < frame.length; i += step) {
+            int value = frame[i] & 0xff;
+            min = Math.min(min, value);
+            max = Math.max(max, value);
+            sum += value;
+            if (compare) delta += Math.abs(value - (previous[i] & 0xff));
+            count++;
+        }
+        double mean = count == 0 ? 0.0 : sum / (double) count;
+        double mad = !compare || count == 0 ? -1.0 : delta / (double) count;
+        return String.format(Locale.US, "luma[min=%d max=%d mean=%.1f delta=%.2f]", min, max, mean, mad);
     }
 
     private String safeName(UsbDevice device) {
@@ -347,6 +441,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void setUsbState(String state, boolean connected) {
+        AppLog.i("STATE", state);
         runOnUiThread(() -> {
             usbStatus.setText(state);
             usbStatus.setTextColor(connected ? GREEN : Color.rgb(255, 184, 92));
@@ -366,6 +461,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     @Override protected void onDestroy() {
+        AppLog.i("APP", "destroy | " + thermalCamera.diagnostics());
         thermalCamera.close();
         if (updateManager != null) updateManager.close();
         unregisterReceiver(usbReceiver);
