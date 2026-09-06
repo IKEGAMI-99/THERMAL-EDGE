@@ -1,7 +1,7 @@
 #include <jni.h>
 #include <android/log.h>
-#include <libuvc/libuvc.h>
 #include <libusb.h>
+#include <libuvc/libuvc.h>
 #include <atomic>
 #include <mutex>
 #include <unistd.h>
