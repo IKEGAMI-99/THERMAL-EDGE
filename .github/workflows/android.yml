@@ -17,11 +17,6 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Install Android native toolchain
-        run: yes | sdkmanager "platforms;android-37" "build-tools;37.0.0" "ndk;27.3.13750724" "cmake;3.31.5"
-
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.6.0"
